@@ -1,0 +1,57 @@
+name: sql-debugger-env
+description: OpenEnv for debugging and optimizing SQL queries on a relational SQLite database.
+version: "1.0"
+entrypoint: api:app
+reset_endpoint: /reset
+step_endpoint: /step
+state_endpoint: /state
+
+action_space:
+  type: object
+  required:
+    - action_type
+  properties:
+    action_type:
+      type: string
+      enum:
+        - execute_sql
+        - explain_plan
+        - add_index
+        - rewrite_query
+        - submit_answer
+    query:
+      type: string
+    table:
+      type: string
+    column:
+      type: string
+
+observation_space:
+  type: object
+  required:
+    - task_description
+    - schema_info
+    - current_query
+    - last_result
+    - execution_plan
+    - step_count
+    - done
+  properties:
+    task_description:
+      type: string
+    schema_info:
+      type: object
+    current_query:
+      type: string
+    last_result:
+      oneOf:
+        - type: array
+        - type: "null"
+    execution_plan:
+      oneOf:
+        - type: array
+        - type: "null"
+    step_count:
+      type: integer
+    done:
+      type: boolean

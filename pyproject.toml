@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sql-debugger-env"
+version = "0.1.0"
+description = "OpenEnv-compatible SQL Query Debugger environment"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "SQL Debugger OpenEnv" }
+]
+dependencies = [
+  "openenv-core>=0.2.0",
+  "fastapi==0.115.12",
+  "uvicorn==0.34.0",
+  "pydantic==2.11.3",
+  "faker==37.1.0",
+  "openai>=2.7.2",
+  "requests==2.32.3",
+  "PyYAML==6.0.2"
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[tool.setuptools]
+packages = ["env", "env.tasks"]
+
+[tool.setuptools.package-data]
+"*" = ["openenv.yaml"]
