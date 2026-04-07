@@ -13,7 +13,7 @@ env = SQLDebuggerEnvironment()
 
 
 class ResetRequest(BaseModel):
-    task_id: int = Field(ge=1, le=3)
+    task_id: int = Field(default=1, ge=1, le=3)
 
 
 class StepRequest(BaseModel):
@@ -42,9 +42,10 @@ def health_endpoint() -> dict[str, str]:
 
 
 @app.post("/reset", response_model=ObservationModel)
-def reset_endpoint(payload: ResetRequest) -> ObservationModel:
+def reset_endpoint(payload: ResetRequest | None = None) -> ObservationModel:
     try:
-        return env.reset(payload.task_id)
+        task_id = payload.task_id if payload is not None else 1
+        return env.reset(task_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
