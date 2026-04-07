@@ -24,8 +24,10 @@ def _get_required_env(name: str) -> str:
 
 def _build_client() -> OpenAI:
     api_base_url = _get_required_env("API_BASE_URL")
-    hf_token = _get_required_env("HF_TOKEN")
-    return OpenAI(base_url=api_base_url, api_key=hf_token)
+    api_key = os.getenv("HF_TOKEN", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("Missing required environment variable: HF_TOKEN or OPENAI_API_KEY")
+    return OpenAI(base_url=api_base_url, api_key=api_key)
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
