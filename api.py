@@ -27,6 +27,20 @@ class StepResponse(BaseModel):
     info: dict[str, Any]
 
 
+@app.get("/")
+def root_endpoint() -> dict[str, str]:
+    return {
+        "status": "ok",
+        "service": "SQL Query Debugger OpenEnv",
+        "docs": "/docs",
+    }
+
+
+@app.get("/health")
+def health_endpoint() -> dict[str, str]:
+    return {"status": "healthy"}
+
+
 @app.post("/reset", response_model=ObservationModel)
 def reset_endpoint(payload: ResetRequest) -> ObservationModel:
     try:
