@@ -1,0 +1,10 @@
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+
+# Local SQLite database generated at runtime
+env.db
+
+# Virtual environments
+.venv/
+venv/
