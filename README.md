@@ -1,3 +1,12 @@
+---
+title: SQL Debugger
+emoji: 🏢
+colorFrom: blue
+colorTo: gray
+sdk: docker
+pinned: false
+---
+
 # SQL Query Debugger OpenEnv
 
 ## Overview
