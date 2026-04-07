@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
+from urllib import error, request
 from typing import Any
-
-import requests
 
 MAX_STEPS = 8
 TASK_IDS = [1, 2, 3]
@@ -51,15 +51,40 @@ def _strict_unit_interval(value: float) -> float:
     return max(STRICT_SCORE_EPSILON, min(1.0 - STRICT_SCORE_EPSILON, float(value)))
 
 
+def _post_json(url: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    req = request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            status_code = getattr(response, "status", response.getcode())
+            if status_code != 200:
+                raise RuntimeError(f"HTTP {status_code}")
+            return json.loads(response.read().decode("utf-8"))
+    except error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {details}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"Request failed: {exc.reason}") from exc
+
+
 def _build_client() -> Any | None:
     try:
-        from openai import OpenAI
+        openai_module = importlib.import_module("openai")
     except Exception:
         return None
 
     api_base_url = os.getenv("API_BASE_URL", "https://api.openai.com/v1").strip() or "https://api.openai.com/v1"
     api_key = os.getenv("HF_TOKEN", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
+        return None
+    OpenAI = getattr(openai_module, "OpenAI", None)
+    if OpenAI is None:
         return None
     return OpenAI(base_url=api_base_url, api_key=api_key)
 
@@ -213,9 +238,7 @@ def run() -> None:
         )
 
         try:
-            reset_resp = requests.post(f"{env_base_url}/reset", json={"task_id": task_id}, timeout=30)
-            reset_resp.raise_for_status()
-            observation = reset_resp.json()
+            observation = _post_json(f"{env_base_url}/reset", {"task_id": task_id}, timeout=30)
         except Exception as exc:
             safe_reward = _strict_unit_interval(0.0)
             final_scores[task_id] = safe_reward
@@ -236,9 +259,7 @@ def run() -> None:
             action = choose_action(client, model_name, observation, task_id, step_idx)
 
             try:
-                step_resp = requests.post(f"{env_base_url}/step", json={"action": action}, timeout=45)
-                step_resp.raise_for_status()
-                payload = step_resp.json()
+                payload = _post_json(f"{env_base_url}/step", {"action": action}, timeout=45)
             except Exception as exc:
                 _emit(
                     "STEP",
