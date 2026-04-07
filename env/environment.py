@@ -14,6 +14,11 @@ from env.grader import grade_submission
 
 MAX_STEPS = 8
 VALID_ACTIONS = {item.value for item in ActionType}
+STRICT_SCORE_EPSILON = 1e-6
+
+
+def _strict_unit_interval(value: float) -> float:
+    return max(STRICT_SCORE_EPSILON, min(1.0 - STRICT_SCORE_EPSILON, float(value)))
 
 
 @dataclass
@@ -150,7 +155,7 @@ class SQLDebuggerEnvironment:
 
     def _invalid_action_result(self, message: str) -> tuple[ObservationModel, float, bool, dict[str, Any]]:
         observation = self._build_observation()
-        return observation, -0.01, False, {"error": message}
+        return observation, _strict_unit_interval(0.0), False, {"error": message}
 
     def _validate_action(self, action: ActionModel) -> str | None:
         if action.action_type not in VALID_ACTIONS:
@@ -227,12 +232,12 @@ class SQLDebuggerEnvironment:
 
         if self.episode_state.done:
             observation = self._build_observation()
-            return observation, 0.0, True, {"message": "Episode already finished"}
+            return observation, _strict_unit_interval(0.0), True, {"message": "Episode already finished"}
 
         if self.episode_state.step_count >= MAX_STEPS:
             self.episode_state.done = True
             observation = self._build_observation()
-            return observation, 0.0, True, {"message": "Max steps reached"}
+            return observation, _strict_unit_interval(0.0), True, {"message": "Max steps reached"}
 
         parsed = action if isinstance(action, ActionModel) else ActionModel(**action)
 
@@ -241,7 +246,7 @@ class SQLDebuggerEnvironment:
             return self._invalid_action_result(validation_error)
 
         info: dict[str, Any] = {}
-        reward = 0.0
+        reward = _strict_unit_interval(0.0)
 
         try:
             if parsed.action_type == ActionType.EXECUTE_SQL.value:
@@ -265,7 +270,7 @@ class SQLDebuggerEnvironment:
             self.episode_state.done = True
 
         observation = self._build_observation()
-        return observation, reward, self.episode_state.done, info
+        return observation, _strict_unit_interval(reward), self.episode_state.done, info
 
     def state(self) -> dict[str, Any]:
         if self.episode_state is None:

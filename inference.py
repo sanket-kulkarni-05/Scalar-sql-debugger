@@ -8,6 +8,7 @@ import requests
 
 MAX_STEPS = 8
 TASK_IDS = [1, 2, 3]
+STRICT_SCORE_EPSILON = 1e-6
 
 SOLVER_SQL_BY_TASK: dict[int, str] = {
     1: (
@@ -44,6 +45,10 @@ SOLVER_SQL_BY_TASK: dict[int, str] = {
 
 def _emit(tag: str, payload: dict[str, Any]) -> None:
     print(f"[{tag}] {json.dumps(payload, separators=(',', ':'), sort_keys=False)}")
+
+
+def _strict_unit_interval(value: float) -> float:
+    return max(STRICT_SCORE_EPSILON, min(1.0 - STRICT_SCORE_EPSILON, float(value)))
 
 
 def _build_client() -> Any | None:
@@ -156,15 +161,35 @@ def choose_action(
 
     action_type = parsed.get("action_type")
     if action_type not in {"execute_sql", "explain_plan", "add_index", "rewrite_query", "submit_answer"}:
-        parsed["action_type"] = "execute_sql"
-        parsed["query"] = observation.get("current_query", "SELECT 1")
+        return _fallback_action(task_id, step_idx, observation)
 
-    return {
-        "action_type": parsed.get("action_type"),
+    sanitized = {
+        "action_type": action_type,
         "query": parsed.get("query"),
         "table": parsed.get("table"),
         "column": parsed.get("column"),
     }
+
+    if action_type in {"execute_sql", "explain_plan", "rewrite_query", "submit_answer"}:
+        query = (sanitized.get("query") or "").strip()
+        if not query:
+            return _fallback_action(task_id, step_idx, observation)
+        sanitized["query"] = query
+
+    if action_type == "add_index":
+        table = (sanitized.get("table") or "").strip()
+        column = (sanitized.get("column") or "").strip()
+        if not table or not column:
+            return _fallback_action(task_id, step_idx, observation)
+        sanitized["table"] = table
+        sanitized["column"] = column
+        sanitized["query"] = None
+
+    if action_type != "add_index":
+        sanitized["table"] = None
+        sanitized["column"] = None
+
+    return sanitized
 
 
 def run() -> None:
@@ -192,19 +217,20 @@ def run() -> None:
             reset_resp.raise_for_status()
             observation = reset_resp.json()
         except Exception as exc:
-            final_scores[task_id] = 0.0
+            safe_reward = _strict_unit_interval(0.0)
+            final_scores[task_id] = safe_reward
             _emit(
                 "END",
                 {
                     "task_id": task_id,
-                    "final_reward": 0.0,
+                    "final_reward": safe_reward,
                     "completed": False,
                     "error": f"reset_failed: {exc}",
                 },
             )
             continue
 
-        final_reward = 0.0
+        final_reward = _strict_unit_interval(0.0)
 
         for step_idx in range(1, MAX_STEPS + 1):
             action = choose_action(client, model_name, observation, task_id, step_idx)
@@ -228,7 +254,7 @@ def run() -> None:
                 break
 
             observation = payload.get("observation", observation)
-            final_reward = float(payload.get("reward", final_reward))
+            final_reward = _strict_unit_interval(float(payload.get("reward", final_reward)))
             done = bool(payload.get("done", False))
 
             _emit(
@@ -246,17 +272,18 @@ def run() -> None:
             if done:
                 break
 
-        final_scores[task_id] = final_reward
+        safe_final_reward = _strict_unit_interval(final_reward)
+        final_scores[task_id] = safe_final_reward
         _emit(
             "END",
             {
                 "task_id": task_id,
-                "final_reward": final_reward,
+                "final_reward": safe_final_reward,
                 "completed": True,
             },
         )
 
-    avg_score = sum(final_scores.values()) / len(final_scores)
+    avg_score = _strict_unit_interval(sum(final_scores.values()) / len(final_scores))
 
     _emit(
         "END",
@@ -276,8 +303,8 @@ if __name__ == "__main__":
             "END",
             {
                 "summary": True,
-                "scores": {},
-                "average_reward": 0.0,
+                "scores": {task_id: _strict_unit_interval(0.0) for task_id in TASK_IDS},
+                "average_reward": _strict_unit_interval(0.0),
                 "fatal_error": str(exc),
             },
         )

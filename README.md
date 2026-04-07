@@ -42,7 +42,7 @@ Supported `action_type` values:
 - `rewrite_query` with `query`
 - `submit_answer` with `query`
 
-Invalid action payloads do not crash the environment. They return unchanged observation, reward `-0.01`, `done=false`, and `info.error`.
+Invalid action payloads do not crash the environment. They return unchanged observation, a tiny non-zero reward inside `(0, 1)`, `done=false`, and `info.error`.
 
 ## Observation Space
 Each step returns:

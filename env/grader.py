@@ -5,6 +5,13 @@ import sqlite3
 from typing import Any
 
 
+STRICT_SCORE_EPSILON = 1e-6
+
+
+def _strict_unit_interval(value: float) -> float:
+    return max(STRICT_SCORE_EPSILON, min(1.0 - STRICT_SCORE_EPSILON, value))
+
+
 def _normalize_scalar(value: Any) -> Any:
     if isinstance(value, float):
         return round(value, 4)
@@ -88,7 +95,9 @@ def grade_submission(
         result_rows = cursor.fetchall()
     except sqlite3.Error as exc:
         info["error"] = str(exc)
-        return 0.0, info
+        safe_score = _strict_unit_interval(0.0)
+        info["final_reward"] = safe_score
+        return round(safe_score, 6), info
 
     result_norm = normalize_rows([tuple(row) for row in result_rows])
     expected_norm = normalize_rows(expected_rows)
@@ -107,10 +116,11 @@ def grade_submission(
     info["validity_bonus"] = validity_bonus
 
     raw_score = correctness + performance + validity_bonus - efficiency_penalty
-    bounded_score = max(0.0, min(1.0, raw_score))
+    bounded_score = _strict_unit_interval(raw_score)
 
     # Guard against -0.0 edge cases for deterministic serialized output.
     bounded_score = 0.0 if math.isclose(bounded_score, 0.0, abs_tol=1e-12) else bounded_score
+    bounded_score = _strict_unit_interval(bounded_score)
     info["final_reward"] = bounded_score
 
     return round(bounded_score, 6), info
