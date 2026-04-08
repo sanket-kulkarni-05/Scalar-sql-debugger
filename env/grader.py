@@ -5,7 +5,8 @@ import sqlite3
 from typing import Any
 
 
-STRICT_SCORE_EPSILON = 1e-9  # Use tiny epsilon — just enough to exclude 0.0 and 1.0
+# Must survive round(..., 6) below, otherwise tiny values become 0.0.
+STRICT_SCORE_EPSILON = 1e-4
 
 
 def _strict_unit_interval(value: float) -> float:

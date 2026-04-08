@@ -57,6 +57,13 @@ def _strict_unit_interval(value: float) -> float:
     return max(STRICT_SCORE_EPSILON, min(1.0 - STRICT_SCORE_EPSILON, float(value)))
 
 
+def _safe_score(value: Any) -> float:
+    try:
+        return round(_strict_unit_interval(float(value)), 6)
+    except (TypeError, ValueError):
+        return round(_strict_unit_interval(0.0), 6)
+
+
 def _post_json(url: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
     req = request.Request(
@@ -246,20 +253,20 @@ def run() -> None:
         try:
             observation = _post_json(f"{env_base_url}/reset", {"task_id": task_id}, timeout=30)
         except Exception as exc:
-            safe_reward = _strict_unit_interval(0.0)
+            safe_reward = _safe_score(0.0)
             final_scores[task_id] = safe_reward
             _emit(
                 "END",
                 {
-                    "task_id": task_id,
-                    "final_reward": safe_reward,
+                    "task_id": str(task_id),
+                    "score": safe_reward,
                     "completed": False,
                     "error": f"reset_failed: {exc}",
                 },
             )
             continue
 
-        final_reward = _strict_unit_interval(0.0)
+        final_reward = _safe_score(0.0)
 
         for step_idx in range(1, MAX_STEPS + 1):
             action = choose_action(client, model_name, observation, task_id, step_idx)
@@ -281,7 +288,7 @@ def run() -> None:
                 break
 
             observation = payload.get("observation", observation)
-            final_reward = _strict_unit_interval(float(payload.get("reward", final_reward)))
+            final_reward = _safe_score(payload.get("reward", final_reward))
             done = bool(payload.get("done", False))
 
             _emit(
@@ -299,25 +306,28 @@ def run() -> None:
             if done:
                 break
 
-        safe_final_reward = _strict_unit_interval(final_reward)
+        safe_final_reward = _safe_score(final_reward)
         final_scores[task_id] = safe_final_reward
         _emit(
             "END",
             {
-                "task_id": task_id,
-                "final_reward": safe_final_reward,
+                "task_id": str(task_id),
+                "score": safe_final_reward,
                 "completed": True,
             },
         )
 
-    avg_score = _strict_unit_interval(sum(final_scores.values()) / len(final_scores))
+    avg_score = _safe_score(sum(final_scores.values()) / len(final_scores))
+    ordered_task_scores = [{"task_id": str(task_id), "score": final_scores[task_id]} for task_id in TASK_IDS]
+    ordered_scores = [item["score"] for item in ordered_task_scores]
 
     _emit(
         "END",
         {
             "summary": True,
-            "scores": final_scores,
-            "average_reward": round(avg_score, 6),
+            "task_scores": ordered_task_scores,
+            "scores": ordered_scores,
+            "average_score": avg_score,
         },
     )
 
@@ -330,8 +340,9 @@ if __name__ == "__main__":
             "END",
             {
                 "summary": True,
-                "scores": {task_id: _strict_unit_interval(0.0) for task_id in TASK_IDS},
-                "average_reward": _strict_unit_interval(0.0),
+                "task_scores": [{"task_id": str(task_id), "score": _safe_score(0.0)} for task_id in TASK_IDS],
+                "scores": [_safe_score(0.0) for _ in TASK_IDS],
+                "average_score": _safe_score(0.0),
                 "fatal_error": str(exc),
             },
         )
