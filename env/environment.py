@@ -14,7 +14,7 @@ from env.grader import grade_submission
 
 MAX_STEPS = 8
 VALID_ACTIONS = {item.value for item in ActionType}
-STRICT_SCORE_EPSILON = 1e-4
+STRICT_SCORE_EPSILON = 0.01
 
 
 def _strict_unit_interval(value: float) -> float:
