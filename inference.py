@@ -3,12 +3,18 @@ from __future__ import annotations
 import importlib
 import json
 import os
-from urllib import error, request
 from typing import Any
+from urllib import error, request
 
 MAX_STEPS = 8
 TASK_IDS = [1, 2, 3]
 STRICT_SCORE_EPSILON = 0.01
+
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1").strip() or "https://api.openai.com/v1"
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini").strip() or "gpt-4o-mini"
+HF_TOKEN = os.getenv("HF_TOKEN")
+OPENENV_BASE_URL = os.getenv("OPENENV_BASE_URL", "http://localhost:7860").strip() or "http://localhost:7860"
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 SOLVER_SQL_BY_TASK: dict[int, str] = {
     1: (
@@ -79,14 +85,13 @@ def _build_client() -> Any | None:
     except Exception:
         return None
 
-    api_base_url = os.getenv("API_BASE_URL", "https://api.openai.com/v1").strip() or "https://api.openai.com/v1"
-    api_key = os.getenv("HF_TOKEN", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = (HF_TOKEN or "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         return None
     OpenAI = getattr(openai_module, "OpenAI", None)
     if OpenAI is None:
         return None
-    return OpenAI(base_url=api_base_url, api_key=api_key)
+    return OpenAI(base_url=API_BASE_URL, api_key=api_key)
 
 
 def _fallback_action(task_id: int, step_idx: int, observation: dict[str, Any]) -> dict[str, Any]:
@@ -218,10 +223,11 @@ def choose_action(
 
 
 def run() -> None:
-    model_name = os.getenv("MODEL_NAME", "gpt-4o-mini").strip() or "gpt-4o-mini"
-    env_base_url = os.getenv("OPENENV_BASE_URL", "http://localhost:7860").strip() or "http://localhost:7860"
+    model_name = MODEL_NAME
+    env_base_url = OPENENV_BASE_URL
 
     client = _build_client()
+    _ = LOCAL_IMAGE_NAME
 
     final_scores: dict[int, float] = {}
 
