@@ -8,7 +8,7 @@ from typing import Any
 
 MAX_STEPS = 8
 TASK_IDS = [1, 2, 3]
-STRICT_SCORE_EPSILON = 1e-6
+STRICT_SCORE_EPSILON = 1e-4
 
 SOLVER_SQL_BY_TASK: dict[int, str] = {
     1: (

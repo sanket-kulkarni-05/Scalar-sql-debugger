@@ -5,7 +5,7 @@ import sqlite3
 from typing import Any
 
 
-STRICT_SCORE_EPSILON = 1e-6
+STRICT_SCORE_EPSILON = 1e-4
 
 
 def _strict_unit_interval(value: float) -> float:
