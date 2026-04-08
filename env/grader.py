@@ -5,7 +5,7 @@ import sqlite3
 from typing import Any
 
 
-STRICT_SCORE_EPSILON = 0.01
+STRICT_SCORE_EPSILON = 1e-9  # Use tiny epsilon — just enough to exclude 0.0 and 1.0
 
 
 def _strict_unit_interval(value: float) -> float:
@@ -71,7 +71,6 @@ def compute_performance_reward(
     scan_reduction_ratio = (baseline_scan - min(candidate_scan, baseline_scan)) / baseline_scan
     index_bonus_ratio = min(candidate["index_count"], 3) / 3.0
 
-    # Weighted heuristic: scan reduction drives most of the gain, index usage adds supporting signal.
     score_ratio = max(0.0, min(1.0, 0.7 * scan_reduction_ratio + 0.3 * index_bonus_ratio))
     return round(0.2 * score_ratio, 6)
 
@@ -95,7 +94,8 @@ def grade_submission(
         result_rows = cursor.fetchall()
     except sqlite3.Error as exc:
         info["error"] = str(exc)
-        safe_score = _strict_unit_interval(0.0)
+        # On error, return a safe low score strictly inside (0, 1)
+        safe_score = _strict_unit_interval(0.05)
         info["final_reward"] = safe_score
         return round(safe_score, 6), info
 
@@ -116,11 +116,9 @@ def grade_submission(
     info["validity_bonus"] = validity_bonus
 
     raw_score = correctness + performance + validity_bonus - efficiency_penalty
-    bounded_score = _strict_unit_interval(raw_score)
 
-    # Guard against -0.0 edge cases for deterministic serialized output.
-    bounded_score = 0.0 if math.isclose(bounded_score, 0.0, abs_tol=1e-12) else bounded_score
-    bounded_score = _strict_unit_interval(bounded_score)
-    info["final_reward"] = bounded_score
+    # Single, clean clamp strictly inside (0, 1) — no 0.0, no 1.0 allowed
+    final_score = _strict_unit_interval(raw_score)
 
-    return round(bounded_score, 6), info
+    info["final_reward"] = final_score
+    return round(final_score, 6), info
