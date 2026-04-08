@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import math
 import sqlite3
 from typing import Any
 
 
-# Must survive round(..., 6) below, otherwise tiny values become 0.0.
+# Epsilon ensures no score ever touches 0.0 or 1.0 after rounding to 6 dp.
+# 1e-4 >> 1e-6 (round precision), so round() can never push us to a boundary.
 STRICT_SCORE_EPSILON = 1e-4
 
 
 def _strict_unit_interval(value: float) -> float:
+    """Clamp value to strictly (0, 1). Always the LAST operation on any score."""
     return max(STRICT_SCORE_EPSILON, min(1.0 - STRICT_SCORE_EPSILON, value))
 
 
@@ -21,7 +22,9 @@ def _normalize_scalar(value: Any) -> Any:
     return str(value)
 
 
-def normalize_rows(rows: list[tuple[Any, ...]] | list[list[Any]] | list[dict[str, Any]]) -> list[tuple[Any, ...]]:
+def normalize_rows(
+    rows: list[tuple[Any, ...]] | list[list[Any]] | list[dict[str, Any]],
+) -> list[tuple[Any, ...]]:
     normalized: list[tuple[Any, ...]] = []
 
     for row in rows:
@@ -37,7 +40,9 @@ def normalize_rows(rows: list[tuple[Any, ...]] | list[list[Any]] | list[dict[str
     return normalized
 
 
-def extract_plan_signals(plan_rows: list[tuple[Any, ...]] | list[list[Any]] | None) -> dict[str, int]:
+def extract_plan_signals(
+    plan_rows: list[tuple[Any, ...]] | list[list[Any]] | None,
+) -> dict[str, int]:
     if not plan_rows:
         return {"scan_count": 0, "index_count": 0}
 
@@ -45,7 +50,6 @@ def extract_plan_signals(plan_rows: list[tuple[Any, ...]] | list[list[Any]] | No
     index_count = 0
 
     for row in plan_rows:
-        detail = ""
         if isinstance(row, (tuple, list)) and row:
             detail = str(row[-1]).upper()
         else:
@@ -73,7 +77,9 @@ def compute_performance_reward(
     index_bonus_ratio = min(candidate["index_count"], 3) / 3.0
 
     score_ratio = max(0.0, min(1.0, 0.7 * scan_reduction_ratio + 0.3 * index_bonus_ratio))
-    return round(0.2 * score_ratio, 6)
+
+    # Clamp to [0.0, 0.2] so this component never exceeds its intended ceiling.
+    return max(0.0, min(0.2, round(0.2 * score_ratio, 6)))
 
 
 def grade_submission(
@@ -90,36 +96,55 @@ def grade_submission(
         "validity_bonus": 0.0,
     }
 
+    # ------------------------------------------------------------------ #
+    # SQL execution                                                        #
+    # ------------------------------------------------------------------ #
     try:
         cursor = conn.execute(sql)
         result_rows = cursor.fetchall()
     except sqlite3.Error as exc:
         info["error"] = str(exc)
-        # On error, return a safe low score strictly inside (0, 1)
+        # Error path: fixed safe score, clamped last, never rounded after clamp.
         safe_score = _strict_unit_interval(0.05)
         info["final_reward"] = safe_score
-        return round(safe_score, 6), info
+        return safe_score, info
 
+    # ------------------------------------------------------------------ #
+    # Correctness                                                          #
+    # ------------------------------------------------------------------ #
     result_norm = normalize_rows([tuple(row) for row in result_rows])
     expected_norm = normalize_rows(expected_rows)
 
     correctness = 0.6 if result_norm == expected_norm else 0.0
     info["correctness"] = correctness
 
+    # ------------------------------------------------------------------ #
+    # Performance                                                          #
+    # ------------------------------------------------------------------ #
     candidate_plan = conn.execute(f"EXPLAIN QUERY PLAN {sql}").fetchall()
     performance = compute_performance_reward(baseline_plan, candidate_plan)
     info["performance"] = performance
 
-    efficiency_penalty = 0.05 * step_count
+    # ------------------------------------------------------------------ #
+    # Penalty & bonus                                                      #
+    # ------------------------------------------------------------------ #
+    # Cap step_count so the penalty can never single-handedly drive the
+    # score to 0.0.  Max penalty = 0.05 * 16 = 0.80.
+    capped_steps = max(0, min(int(step_count), 16))
+    efficiency_penalty = round(0.05 * capped_steps, 6)
     info["efficiency_penalty"] = efficiency_penalty
 
     validity_bonus = 0.1
     info["validity_bonus"] = validity_bonus
 
+    # ------------------------------------------------------------------ #
+    # Final score                                                          #
+    # Rule: round() FIRST so its carry cannot escape the clamp,           #
+    #       _strict_unit_interval() is ALWAYS the very last operation.    #
+    # ------------------------------------------------------------------ #
     raw_score = correctness + performance + validity_bonus - efficiency_penalty
+    final_score = _strict_unit_interval(round(raw_score, 6))
 
-    # Single, clean clamp strictly inside (0, 1) — no 0.0, no 1.0 allowed
-    final_score = _strict_unit_interval(raw_score)
-
+    info["raw_score"] = round(raw_score, 6)
     info["final_reward"] = final_score
-    return round(final_score, 6), info
+    return final_score, info
