@@ -221,6 +221,7 @@ class SQLDebuggerEnvironment:
             expected_rows=self.current_task["expected_rows"],
             baseline_plan=self.current_task.get("baseline_plan"),
             step_count=self.episode_state.step_count,
+            difficulty=self.current_task.get("difficulty", "hard"),
         )
         self.episode_state.done = True
         self.episode_state.last_result = [{"submitted": True}]
