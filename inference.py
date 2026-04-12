@@ -9,6 +9,7 @@ from urllib import error, request
 MAX_STEPS = 8
 TASK_IDS = [1, 2, 3]
 STRICT_SCORE_EPSILON = 0.01
+BENCHMARK_NAME = "sql-debugger"
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1").strip() or "https://api.openai.com/v1"
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini").strip() or "gpt-4o-mini"
@@ -48,9 +49,43 @@ SOLVER_SQL_BY_TASK: dict[int, str] = {
     ),
 }
 
+TASK_NAME_BY_ID: dict[int, str] = {
+    1: "easy",
+    2: "medium",
+    3: "hard",
+}
 
-def _emit(tag: str, payload: dict[str, Any]) -> None:
-    print(f"[{tag}] {json.dumps(payload, separators=(',', ':'), sort_keys=False)}")
+
+def _format_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _format_score(value: Any) -> str:
+    return f"{_safe_score(value):.2f}"
+
+
+def _format_error(value: Any) -> str:
+    return "null" if value in (None, "") else str(value)
+
+
+def _emit_start(task_name: str, model_name: str) -> None:
+    print(f"[START] task={task_name} env={BENCHMARK_NAME} model={model_name}")
+
+
+def _emit_step(step: int, action: dict[str, Any], reward: Any, done: bool, error_message: Any) -> None:
+    action_text = json.dumps(action, separators=(",", ":"), sort_keys=False)
+    print(
+        f"[STEP] step={step} action={action_text} reward={_format_score(reward)} "
+        f"done={_format_bool(done)} error={_format_error(error_message)}"
+    )
+
+
+def _emit_end(success: bool, steps: int, score: Any, rewards: list[float]) -> None:
+    rewards_text = ",".join(f"{reward:.2f}" for reward in rewards)
+    print(
+        f"[END] success={_format_bool(success)} steps={steps} "
+        f"score={_format_score(score)} rewards={rewards_text}"
+    )
 
 
 def _strict_unit_interval(value: float) -> float:
@@ -239,34 +274,22 @@ def run() -> None:
     final_scores: dict[int, float] = {}
 
     for task_id in TASK_IDS:
-        _emit(
-            "START",
-            {
-                "task_id": task_id,
-                "model": model_name,
-                "max_steps": MAX_STEPS,
-                "env_base_url": env_base_url,
-                "llm_enabled": client is not None,
-            },
-        )
+        task_name = TASK_NAME_BY_ID.get(task_id, f"task-{task_id}")
+        step_rewards: list[float] = []
+        _emit_start(task_name, model_name)
 
         try:
             observation = _post_json(f"{env_base_url}/reset", {"task_id": task_id}, timeout=30)
-        except Exception as exc:
+        except Exception:
             safe_reward = _safe_score(0.0)
             final_scores[task_id] = safe_reward
-            _emit(
-                "END",
-                {
-                    "task_id": str(task_id),
-                    "score": safe_reward,
-                    "completed": False,
-                    "error": f"reset_failed: {exc}",
-                },
-            )
+            step_rewards.append(safe_reward)
+            _emit_end(False, 0, safe_reward, step_rewards)
             continue
 
         final_reward = _safe_score(0.0)
+        completed = False
+        steps_taken = 0
 
         for step_idx in range(1, MAX_STEPS + 1):
             action = choose_action(client, model_name, observation, task_id, step_idx)
@@ -274,75 +297,33 @@ def run() -> None:
             try:
                 payload = _post_json(f"{env_base_url}/step", {"action": action}, timeout=45)
             except Exception as exc:
-                _emit(
-                    "STEP",
-                    {
-                        "task_id": task_id,
-                        "step": step_idx,
-                        "action_type": action.get("action_type"),
-                        "reward": final_reward,
-                        "done": True,
-                        "error": f"step_failed: {exc}",
-                    },
-                )
+                step_rewards.append(final_reward)
+                _emit_step(step_idx, action, final_reward, True, f"step_failed: {exc}")
+                steps_taken = step_idx
                 break
 
             observation = payload.get("observation", observation)
             final_reward = _safe_score(payload.get("reward", final_reward))
             done = bool(payload.get("done", False))
+            steps_taken = step_idx
+            step_rewards.append(final_reward)
 
-            _emit(
-                "STEP",
-                {
-                    "task_id": task_id,
-                    "step": step_idx,
-                    "action_type": action.get("action_type"),
-                    "reward": final_reward,
-                    "done": done,
-                    "error": (payload.get("info") or {}).get("error"),
-                },
-            )
+            _emit_step(step_idx, action, final_reward, done, (payload.get("info") or {}).get("error"))
 
             if done:
+                completed = True
                 break
 
         safe_final_reward = _safe_score(final_reward)
         final_scores[task_id] = safe_final_reward
-        _emit(
-            "END",
-            {
-                "task_id": str(task_id),
-                "score": safe_final_reward,
-                "completed": True,
-            },
-        )
-
-    avg_score = _safe_score(sum(final_scores.values()) / len(final_scores))
-    ordered_task_scores = [{"task_id": str(task_id), "score": final_scores[task_id]} for task_id in TASK_IDS]
-    ordered_scores = [item["score"] for item in ordered_task_scores]
-
-    _emit(
-        "END",
-        {
-            "summary": True,
-            "task_scores": ordered_task_scores,
-            "scores": ordered_scores,
-            "average_score": avg_score,
-        },
-    )
+        if not step_rewards:
+            step_rewards.append(safe_final_reward)
+        _emit_end(completed, steps_taken, safe_final_reward, step_rewards)
 
 
 if __name__ == "__main__":
     try:
         run()
     except Exception as exc:  # noqa: BLE001
-        _emit(
-            "END",
-            {
-                "summary": True,
-                "task_scores": [{"task_id": str(task_id), "score": _safe_score(0.0)} for task_id in TASK_IDS],
-                "scores": [_safe_score(0.0) for _ in TASK_IDS],
-                "average_score": _safe_score(0.0),
-                "fatal_error": str(exc),
-            },
-        )
+        print(f"[END] success=false steps=0 score={_format_score(0.0)} rewards={_format_score(0.0)}")
+        raise SystemExit(str(exc))
