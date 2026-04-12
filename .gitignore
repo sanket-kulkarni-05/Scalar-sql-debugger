@@ -1,10 +1,19 @@
 # Python bytecode/cache
 __pycache__/
 *.py[cod]
+*.py[cod].*
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
 
-# Local SQLite database generated at runtime
-env.db
+# Local SQLite databases generated at runtime
+*.db
+*.db-journal
 
 # Virtual environments
 .venv/
+.venv313/
 venv/
+
+# Local scratch/debug artifacts
+scratch_*

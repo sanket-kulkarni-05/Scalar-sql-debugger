@@ -1,17 +1,27 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 from typing import Any
 
 
-# Epsilon ensures no score ever touches 0.0 or 1.0 after rounding to 6 dp.
-# 1e-4 >> 1e-6 (round precision), so round() can never push us to a boundary.
-STRICT_SCORE_EPSILON = 1e-4
+# Keep scores visibly away from 0 and 1 so validator rounding never turns a
+# valid score into 0.00 or 1.00.
+MIN_SCORE = 0.01
+MAX_SCORE = 0.99
+
+CORRECTNESS_REWARD = 0.6
+MAX_PERFORMANCE_REWARD = 0.2
+VALID_SQL_BONUS = 0.1
+STEP_PENALTY = 0.05
+MAX_PENALIZED_STEPS = 16
+MAX_INDEX_COUNT = 3
 
 
-def _strict_unit_interval(value: float) -> float:
-    """Clamp value to strictly (0, 1). Always the LAST operation on any score."""
-    return max(STRICT_SCORE_EPSILON, min(1.0 - STRICT_SCORE_EPSILON, value))
+def _clamp_score(value: float) -> float:
+    if not math.isfinite(value):
+        return MIN_SCORE
+    return max(MIN_SCORE, min(MAX_SCORE, round(float(value), 6)))
 
 
 def _normalize_scalar(value: Any) -> Any:
@@ -40,8 +50,18 @@ def normalize_rows(
     return normalized
 
 
+def _plan_detail(row: Any) -> str:
+    if isinstance(row, dict):
+        value = row.get("detail", row)
+    elif isinstance(row, (list, tuple)) and row:
+        value = row[-1]
+    else:
+        value = row
+    return str(value).upper()
+
+
 def extract_plan_signals(
-    plan_rows: list[tuple[Any, ...]] | list[list[Any]] | None,
+    plan_rows: list[tuple[Any, ...]] | list[list[Any]] | list[dict[str, Any]] | None,
 ) -> dict[str, int]:
     if not plan_rows:
         return {"scan_count": 0, "index_count": 0}
@@ -50,11 +70,7 @@ def extract_plan_signals(
     index_count = 0
 
     for row in plan_rows:
-        if isinstance(row, (tuple, list)) and row:
-            detail = str(row[-1]).upper()
-        else:
-            detail = str(row).upper()
-
+        detail = _plan_detail(row)
         if "SCAN" in detail:
             scan_count += 1
         if "USING INDEX" in detail or "USING COVERING INDEX" in detail:
@@ -64,29 +80,26 @@ def extract_plan_signals(
 
 
 def compute_performance_reward(
-    baseline_plan: list[tuple[Any, ...]] | list[list[Any]] | None,
-    candidate_plan: list[tuple[Any, ...]] | list[list[Any]] | None,
+    baseline_plan: list[tuple[Any, ...]] | list[list[Any]] | list[dict[str, Any]] | None,
+    candidate_plan: list[tuple[Any, ...]] | list[list[Any]] | list[dict[str, Any]] | None,
 ) -> float:
     baseline = extract_plan_signals(baseline_plan)
     candidate = extract_plan_signals(candidate_plan)
 
-    baseline_scan = max(baseline["scan_count"], 1)
-    candidate_scan = candidate["scan_count"]
+    baseline_scan_count = max(baseline["scan_count"], 1)
+    candidate_scan_count = min(candidate["scan_count"], baseline_scan_count)
+    scan_improvement = (baseline_scan_count - candidate_scan_count) / baseline_scan_count
 
-    scan_reduction_ratio = (baseline_scan - min(candidate_scan, baseline_scan)) / baseline_scan
-    index_bonus_ratio = min(candidate["index_count"], 3) / 3.0
-
-    score_ratio = max(0.0, min(1.0, 0.7 * scan_reduction_ratio + 0.3 * index_bonus_ratio))
-
-    # Clamp to [0.0, 0.2] so this component never exceeds its intended ceiling.
-    return max(0.0, min(0.2, round(0.2 * score_ratio, 6)))
+    index_bonus = min(candidate["index_count"], MAX_INDEX_COUNT) / MAX_INDEX_COUNT
+    performance_score = MAX_PERFORMANCE_REWARD * ((0.7 * scan_improvement) + (0.3 * index_bonus))
+    return round(max(0.0, min(MAX_PERFORMANCE_REWARD, performance_score)), 6)
 
 
 def grade_submission(
     conn: sqlite3.Connection,
     sql: str,
     expected_rows: list[tuple[Any, ...]] | list[list[Any]] | list[dict[str, Any]],
-    baseline_plan: list[tuple[Any, ...]] | list[list[Any]] | None,
+    baseline_plan: list[tuple[Any, ...]] | list[list[Any]] | list[dict[str, Any]] | None,
     step_count: int,
 ) -> tuple[float, dict[str, Any]]:
     info: dict[str, Any] = {
@@ -96,54 +109,38 @@ def grade_submission(
         "validity_bonus": 0.0,
     }
 
-    # ------------------------------------------------------------------ #
-    # SQL execution                                                        #
-    # ------------------------------------------------------------------ #
     try:
-        cursor = conn.execute(sql)
-        result_rows = cursor.fetchall()
+        result_rows = conn.execute(sql).fetchall()
     except sqlite3.Error as exc:
         info["error"] = str(exc)
-        # Error path: fixed safe score, clamped last, never rounded after clamp.
-        safe_score = _strict_unit_interval(0.05)
-        info["final_reward"] = safe_score
-        return safe_score, info
+        final_score = _clamp_score(0.05)
+        info["raw_score"] = 0.05
+        info["final_reward"] = final_score
+        return final_score, info
 
-    # ------------------------------------------------------------------ #
-    # Correctness                                                          #
-    # ------------------------------------------------------------------ #
-    result_norm = normalize_rows([tuple(row) for row in result_rows])
-    expected_norm = normalize_rows(expected_rows)
+    try:
+        result_norm = normalize_rows([tuple(row) for row in result_rows])
+        expected_norm = normalize_rows(expected_rows)
+        if result_norm == expected_norm:
+            info["correctness"] = CORRECTNESS_REWARD
 
-    correctness = 0.6 if result_norm == expected_norm else 0.0
-    info["correctness"] = correctness
+        candidate_plan = conn.execute(f"EXPLAIN QUERY PLAN {sql}").fetchall()
+        info["performance"] = compute_performance_reward(baseline_plan, candidate_plan)
+    except sqlite3.Error as exc:
+        info["error"] = str(exc)
 
-    # ------------------------------------------------------------------ #
-    # Performance                                                          #
-    # ------------------------------------------------------------------ #
-    candidate_plan = conn.execute(f"EXPLAIN QUERY PLAN {sql}").fetchall()
-    performance = compute_performance_reward(baseline_plan, candidate_plan)
-    info["performance"] = performance
+    info["validity_bonus"] = VALID_SQL_BONUS
 
-    # ------------------------------------------------------------------ #
-    # Penalty & bonus                                                      #
-    # ------------------------------------------------------------------ #
-    # Cap step_count so the penalty can never single-handedly drive the
-    # score to 0.0.  Max penalty = 0.05 * 16 = 0.80.
-    capped_steps = max(0, min(int(step_count), 16))
-    efficiency_penalty = round(0.05 * capped_steps, 6)
-    info["efficiency_penalty"] = efficiency_penalty
+    capped_steps = max(0, min(int(step_count), MAX_PENALIZED_STEPS))
+    info["efficiency_penalty"] = round(STEP_PENALTY * capped_steps, 6)
 
-    validity_bonus = 0.1
-    info["validity_bonus"] = validity_bonus
-
-    # ------------------------------------------------------------------ #
-    # Final score                                                          #
-    # Rule: round() FIRST so its carry cannot escape the clamp,           #
-    #       _strict_unit_interval() is ALWAYS the very last operation.    #
-    # ------------------------------------------------------------------ #
-    raw_score = correctness + performance + validity_bonus - efficiency_penalty
-    final_score = _strict_unit_interval(round(raw_score, 6))
+    raw_score = (
+        info["correctness"]
+        + info["performance"]
+        + info["validity_bonus"]
+        - info["efficiency_penalty"]
+    )
+    final_score = _clamp_score(raw_score)
 
     info["raw_score"] = round(raw_score, 6)
     info["final_reward"] = final_score
