@@ -3,7 +3,7 @@ using namespace std;
 
 int main()
 {
-    string key = "FORTUNE";
+    string key = "MEGABUCK";
 
     string message;
     cout << "Enter message: ";
@@ -37,7 +37,7 @@ int main()
             }
             else
             {
-                matrix[i][j] = '\0';
+                matrix[i][j] = 'X';
             }
         }
     }
@@ -114,6 +114,10 @@ int main()
             if (decryptMatrix[i][j] != '\0')
                 decrypted += decryptMatrix[i][j];
         }
+    }
+    while (!decrypted.empty() && decrypted.back() == 'X')
+    {
+        decrypted.pop_back();
     }
 
     cout << "\nDecrypted message: " << decrypted << endl;
